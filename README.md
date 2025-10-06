@@ -147,8 +147,4 @@ Proxy to external keyword API with rate limiting.
 
 For any questions or issues, please open a GitHub ticket or contact the development team.
 
-***
-
-This concludes the project README summarizing the system, tools, and roadmap.
-Would you like me to generate a ready-to-use Dockerfile or a sample batch processing design next?
 
