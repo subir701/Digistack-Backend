@@ -1,7 +1,3 @@
-<img src="https://r2cdn.perplexity.ai/pplx-full-logo-primary-dark%402x.png" style="height:64px;margin-right:32px"/>
-
-# Project README
-
 ## Project Overview
 
 This project is a **Keyword Research Backend API** that provides keyword data enriched with metrics like competition, search volume, bid prices, and monthly trends. It efficiently handles user quotas and rate limits while caching keyword data at multiple levels (local cache, Redis server cache) for fast responses. The backend securely exposes REST endpoints to clients with JWT-based authentication and role-based access control.
