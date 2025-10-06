@@ -84,11 +84,64 @@ Automate builds, tests, and deployments integrated with Docker images.
 ./gradlew bootRun
 ```
 
-- Available endpoints:
-    - `/api/keywords/fetch` - POST keyword data queries
-    - `/api/keywords/history` - POST get cache keyword history within 12 hours
+##API endpoints:
+### Keyword Cache
+
+- `POST /api/keywords/fetch`
+Fetch keyword data with quota checks and caching.
+- `POST /api/keywords/history`
+Retrieve user keyword cache history within the last 12 hours.
+
+
+### User Quota
+
+- `POST /api/quota/{userId}/validate`
+Validate and consume quota for user.
+- `POST /api/quota/{userId}/revert`
+Revert previously consumed quota for user.
+- `GET /api/quota/{userId}`
+Get current quota usage for user.
+
+
+### User
+
+- `POST /api/users/register`
+Register new user (with password encryption).
+- `POST /api/users/login`
+Authenticate user and generate JWT.
+- `PUT /api/users/{id}/email`
+Update user email.
+- `GET /api/users/{email}`
+Fetch user details by email.
+
+
+### Monthly Usage
+
+- `POST /api/monthly-usage`
+Create monthly usage record.
+- `PUT /api/monthly-usage/{id}/increment`
+Increment usage credit.
+- `GET /api/monthly-usage/{id}`
+Get usage record by ID.
+- `GET /api/monthly-usage/month/{month}`
+Get usage by month.
+
+
+### Global Counter
+
+- `POST /api/global/increment`
+Increment global keyword usage.
+- `GET /api/global/usage`
+Get current month global usage.
+
+
+### External API Proxy
+
+- `GET /api/external/keyword`
+Proxy to external keyword API with rate limiting.
 
 ***
+
 
 ## Contact and Support
 
