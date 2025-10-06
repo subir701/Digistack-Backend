@@ -7,6 +7,7 @@ import com.digistackBackend.exception.InvalidCredentialsException;
 import com.digistackBackend.exception.UserAlreadyExistsException;
 import com.digistackBackend.exception.UserNotFoundException;
 import com.digistackBackend.service.UserService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -24,7 +25,7 @@ public class UserController {
     private final BCryptPasswordEncoder bCryptPasswordEncoder = new BCryptPasswordEncoder(12);
 
     @PostMapping("/register")
-    public ResponseEntity<UserResponseDTO> registerUser(@RequestBody UserRequestDTO dto) throws UserAlreadyExistsException {
+    public ResponseEntity<UserResponseDTO> registerUser(@RequestBody @Valid UserRequestDTO dto) throws UserAlreadyExistsException {
         dto.setPassword(bCryptPasswordEncoder.encode(dto.getPassword()));
         UserResponseDTO createdUser = userService.registerUser(dto);
         return new ResponseEntity<>(createdUser, HttpStatus.ACCEPTED);

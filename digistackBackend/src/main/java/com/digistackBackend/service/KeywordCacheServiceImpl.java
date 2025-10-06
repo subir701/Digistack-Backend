@@ -1,77 +1,172 @@
 package com.digistackBackend.service;
 
+import com.digistackBackend.dto.KeywordSearchRequestDTO;
+import com.digistackBackend.dto.UserLocalCacheDTO;
+import com.digistackBackend.exception.QuotaExceededException;
 import com.digistackBackend.redis.KeywordCache;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
-import java.util.UUID;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class KeywordCacheServiceImpl implements KeywordCacheService{
 
-    private final RedisTemplate<String, Object> redisTemplate;
+    private final RedisTemplate<String, KeywordCache> redisTemplate;
+    private final StringRedisTemplate stringRedisTemplate;
     private final UserQuotaService userQuotaService;
     private final GlobalCounterService globalCounterService;
     private final ExternalApiRateLimiterService externalApiRateLimiterService; // wrapper to call DataForSEO
 
-    private static final String USER_CACHE_PREFIX = "user:%s:keyword:%s";
+    @Qualifier("asyncExecutor")
+    private final Executor asyncExecutor;
+
     private static final String SERVER_CACHE_PREFIX = "keyword:%s";
     private static final Duration SERVER_TTL = Duration.ofHours(12);
-    private static final Duration USER_TTL = Duration.ofHours(24);
 
     // If true, you charge quota even on cache hits (uncommon). Default false.
-    private boolean chargeOnCacheHit = false;
+    private boolean chargeOnCacheHit = true;
 
-    public KeywordCache getKeywordData(UUID userId, String rawKeyword, int locationCode, String languageCode) {
-        String keyword = normalize(rawKeyword);
-        String userKey = String.format(USER_CACHE_PREFIX, userId, keyword);
+    @Override
+    public KeywordCache getKeywordData(KeywordSearchRequestDTO dto) {
+        log.info("Entering getKeywordData for userId={} keyword={}", dto.getUserId(), dto.getKeywords());
+        String keyword = normalize(dto.getKeywords());
+
+        // 1️⃣ Check user local cache
+        if (dto.getUserLocalCache() != null &&
+                dto.getUserLocalCache().stream().anyMatch(c -> c.getKeyword().equalsIgnoreCase(keyword))) {
+            log.info("User {} has local cache for keyword {}, skipping server fetch", dto.getUserId(), keyword);
+            return null; // or special response
+        }
+
         String serverKey = String.format(SERVER_CACHE_PREFIX, keyword);
 
-        // 1) User cache
-        KeywordCache userCache = (KeywordCache) redisTemplate.opsForValue().get(userKey);
-        if (userCache != null) {
-            if (chargeOnCacheHit) {
-                // if you want to decrement quota even for cache hits:
-                userQuotaService.validateAndConsumeQuota(userId); // will throw if exceeded
-                // (we are not calling external API so no DB increment here)
-            }
-            return userCache;
-        }
+        if (chargeOnCacheHit) userQuotaService.validateAndConsumeQuota(dto.getUserId());
 
-        // 2) Server cache
-        KeywordCache serverCache = (KeywordCache) redisTemplate.opsForValue().get(serverKey);
-        if (serverCache != null) {
-            // Optionally charge quota on cache hit:
-            if (chargeOnCacheHit) {
-                userQuotaService.validateAndConsumeQuota(userId);
-            }
-            // populate user cache for faster next time (no DB changes)
-            redisTemplate.opsForValue().set(userKey, serverCache, USER_TTL);
-            return serverCache;
-        }
-
-        // 3) Cache miss → must consume user quota before hitting external API
-        userQuotaService.validateAndConsumeQuota(userId);
+        // 2️⃣ Check server Redis cache
         try {
-            // Here you should use your token-bucket / queue manager to ensure 12 req/min
-            // For clarity, I'll call the external API directly (but in production enqueue it).
-            KeywordCache fresh = externalApiRateLimiterService.safeFetchKeyword(keyword, locationCode, languageCode);
-            // Persist global usage (increments Redis and saves into monthly table atomically)
+
+            KeywordCache cached = redisTemplate.opsForValue().get(serverKey);
+            if (cached != null) {
+                log.info("Cache hit for keyword={}", keyword);
+
+                return cached;
+            }
+        }catch(QuotaExceededException ex){
+            throw new RuntimeException("Daily quota exceeded for user=" + dto.getUserId());
+        }
+
+        log.info("Cache miss for keyword={}, checking quota and external API", keyword);
+
+
+        // 5️⃣ Prevent cache stampede
+        String lockKey = "lock:" + keyword;
+        Boolean acquired = stringRedisTemplate.opsForValue().setIfAbsent(lockKey, "locked", Duration.ofSeconds(5));
+        if (Boolean.FALSE.equals(acquired)) {
+            // Another thread/process fetching keyword, wait for cache
+            int retries = 0;
+            while (retries++ < 10) {
+                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+                KeywordCache cached = redisTemplate.opsForValue().get(serverKey);
+                if (cached != null) return cached;
+            }
+            throw new RuntimeException("Server busy, please retry");
+        }
+
+        try {
+            // 6️⃣ Fetch from external API
+            KeywordCache fresh = externalApiRateLimiterService.safeFetchKeyword(
+                    keyword, dto.getLocation_code(), dto.getLanguage_code(), dto.getDate_from());
             globalCounterService.incrementGlobalCounter(1);
 
-            // Save both caches
+            log.info("Fetched fresh keyword from external API: {}", fresh);
             redisTemplate.opsForValue().set(serverKey, fresh, SERVER_TTL);
-            redisTemplate.opsForValue().set(userKey, fresh, USER_TTL);
-
             return fresh;
-        } catch (Exception ex) {
-            // External API failed → revert user quota consumption
-            userQuotaService.revertQuota(userId);
-            throw new RuntimeException("Failed to fetch keyword data", ex);
+        } finally {
+            stringRedisTemplate.delete(lockKey);
         }
+    }
+
+//    Below is parllel processing code this this we are going to work in future
+//    @Override
+//    public CompletableFuture<KeywordCache> getKeywordData(KeywordSearchRequestDTO keywordSearchRequestDTO) {
+//        return CompletableFuture.supplyAsync(() -> getKeywordDataInternal(keywordSearchRequestDTO), asyncExecutor);
+//    }
+//
+//    private KeywordCache getKeywordDataInternal(KeywordSearchRequestDTO dto) {
+//        log.info("Entering getKeywordData for userId={} keyword={}", dto.getUserId(), dto.getKeywords());
+//        String keyword = normalize(dto.getKeywords());
+//
+//        // 1️⃣ Check user local cache
+//        if (dto.getUserLocalCache() != null &&
+//                dto.getUserLocalCache().stream().anyMatch(c -> c.getKeyword().equalsIgnoreCase(keyword))) {
+//            log.info("User {} has local cache for keyword {}, skipping server fetch", dto.getUserId(), keyword);
+//            return null; // or special response
+//        }
+//
+//        String serverKey = String.format(SERVER_CACHE_PREFIX, keyword);
+//
+//        // 2️⃣ Check server Redis cache
+//        try {
+//
+//            KeywordCache cached = redisTemplate.opsForValue().get(serverKey);
+//            if (cached != null) {
+//                log.info("Cache hit for keyword={}", keyword);
+//                if (chargeOnCacheHit) userQuotaService.validateAndConsumeQuota(dto.getUserId());
+//                return cached;
+//            }
+//        }catch(QuotaExceededException ex){
+//            throw new RuntimeException("Daily quota exceeded for user=" + dto.getUserId());
+//        }
+//
+//        log.info("Cache miss for keyword={}, checking quota and external API", keyword);
+//
+//
+//        // 5️⃣ Prevent cache stampede
+//        String lockKey = "lock:" + keyword;
+//        Boolean acquired = stringRedisTemplate.opsForValue().setIfAbsent(lockKey, "locked", Duration.ofSeconds(5));
+//        if (Boolean.FALSE.equals(acquired)) {
+//            // Another thread/process fetching keyword, wait for cache
+//            int retries = 0;
+//            while (retries++ < 10) {
+//                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+//                KeywordCache cached = redisTemplate.opsForValue().get(serverKey);
+//                if (cached != null) return cached;
+//            }
+//            throw new RuntimeException("Server busy, please retry");
+//        }
+//
+//        try {
+//            // 6️⃣ Fetch from external API
+//            KeywordCache fresh = externalApiRateLimiterService.safeFetchKeyword(
+//                    keyword, dto.getLocation_code(), dto.getLanguage_code(), dto.getDate_from());
+//            globalCounterService.incrementGlobalCounter(1);
+//
+//            log.info("Fetched fresh keyword from external API: {}", fresh);
+//            redisTemplate.opsForValue().set(serverKey, fresh, SERVER_TTL);
+//            return fresh;
+//        } finally {
+//            stringRedisTemplate.delete(lockKey);
+//        }
+//    }
+
+    @Override
+    public List<String> getCacheHistoryLast12Hours(List<UserLocalCacheDTO> userLocalCacheDTOList) {
+        long cutoff = System.currentTimeMillis() - 12*60*60*1000L;
+        return userLocalCacheDTOList.stream()
+                .filter(entry -> entry.getCacheTimestamp() != 0L && entry.getCacheTimestamp() >= cutoff)
+                .map(UserLocalCacheDTO::getKeyword)
+                .collect(Collectors.toList());
     }
 
     private String normalize(String kw) {

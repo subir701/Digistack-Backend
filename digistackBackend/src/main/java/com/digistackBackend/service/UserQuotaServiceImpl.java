@@ -3,7 +3,9 @@ package com.digistackBackend.service;
 import com.digistackBackend.exception.QuotaExceededException;
 import com.digistackBackend.redis.UserQuota;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
@@ -14,9 +16,10 @@ import java.util.concurrent.TimeUnit;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class UserQuotaServiceImpl implements UserQuotaService{
 
-    private final RedisTemplate<String, Object> redisTemplate;
+    private final StringRedisTemplate stringRedisTemplate;
     private static final String USER_QUOTA_KEY = "user:%s:quota:%s";
     private static final String USER_MINUTE_BUCKET_KEY = "user:%s:bucket:%s"; // userId, minute
     private static final int MAX_DAILY_REQUESTS = 5;
@@ -26,24 +29,44 @@ public class UserQuotaServiceImpl implements UserQuotaService{
     // KEYS[1] = dayKey, KEYS[2] = bucketKey
     // ARGV[1] = maxDaily, ARGV[2] = maxMinute, ARGV[3] = dayTTLSeconds, ARGV[4] = bucketTTLSeconds
     private static final String QUOTA_LUA = """
-    local day = tonumber(redis.call('GET', KEYS[1]) or '0')
-    local bucket = tonumber(redis.call('GET', KEYS[2]) or '0')
-    local maxDaily = tonumber(ARGV[1])
-    local maxMinute = tonumber(ARGV[2])
-    local dayTTL = tonumber(ARGV[3])
-    local bucketTTL = tonumber(ARGV[4])
-    if (day + 1) > maxDaily then
-      return 'DAILY_LIMIT_EXCEEDED'
-    end
-    if (bucket + 1) > maxMinute then
-      return 'MINUTE_LIMIT_EXCEEDED'
-    end
-    local dayVal = redis.call('INCR', KEYS[1])
-    if dayVal == 1 then redis.call('EXPIRE', KEYS[1], dayTTL) end
-    local bucketVal = redis.call('INCR', KEYS[2])
-    if bucketVal == 1 then redis.call('EXPIRE', KEYS[2], bucketTTL) end
-    return 'OK'
-    """;
+            local function toNumber(val)
+                if not val then
+                    return 0
+                end
+                return tonumber(val) or 0
+            end
+                        
+            local day = toNumber(redis.call('GET', KEYS[1]))
+            local bucket = toNumber(redis.call('GET', KEYS[2]))
+                        
+            local maxDaily = tonumber(ARGV[1])
+            local maxMinute = tonumber(ARGV[2])
+            local dayTTL = tonumber(ARGV[3])
+            local bucketTTL = tonumber(ARGV[4])
+                        
+            
+            if (day + 1) > maxDaily then
+                return 'DAILY_LIMIT_EXCEEDED'
+            end
+                        
+            if (bucket + 1) > maxMinute then
+                return 'MINUTE_LIMIT_EXCEEDED'
+            end
+                        
+            
+            local dayVal = redis.call('INCR', KEYS[1])
+            if dayVal == 1 then
+                redis.call('EXPIRE', KEYS[1], dayTTL)
+            end
+                        
+            
+            local bucketVal = redis.call('INCR', KEYS[2])
+            if bucketVal == 1 then
+                redis.call('EXPIRE', KEYS[2], bucketTTL)
+            end
+                        
+            return 'OK'
+            """;
 
     private final DefaultRedisScript<String> quotaScript = new DefaultRedisScript<>(QUOTA_LUA, String.class);
 
@@ -53,6 +76,7 @@ public class UserQuotaServiceImpl implements UserQuotaService{
      */
     @Override
     public void validateAndConsumeQuota(UUID userId) throws QuotaExceededException {
+
         String today = LocalDate.now().toString();
         String dayKey = String.format(USER_QUOTA_KEY, userId, today);
 
@@ -63,22 +87,46 @@ public class UserQuotaServiceImpl implements UserQuotaService{
         String dayTtl = String.valueOf(TimeUnit.DAYS.toSeconds(1));
         String bucketTtl = String.valueOf(60); // 60 seconds for minute bucket
 
-        String res = redisTemplate.execute(quotaScript,
+        log.debug("Validating quota for user={} dayKey={} bucketKey={}", userId, dayKey, bucketKey);
+        log.info("Lua script KEYS/ARGV before execute: KEYS={}, ARGV={}",
                 Arrays.asList(dayKey, bucketKey),
-                String.valueOf(MAX_DAILY_REQUESTS),
-                String.valueOf(MAX_REQUESTS_PER_MINUTE),
-                dayTtl,
-                bucketTtl);
+                Arrays.asList(
+                        String.valueOf(MAX_DAILY_REQUESTS),
+                        String.valueOf(MAX_REQUESTS_PER_MINUTE),
+                        dayTtl,
+                        bucketTtl)
+        );
+
+        try {
+            String res = stringRedisTemplate.execute(quotaScript,
+                    Arrays.asList(dayKey, bucketKey),
+                    String.valueOf(MAX_DAILY_REQUESTS),
+                    String.valueOf(MAX_REQUESTS_PER_MINUTE),
+                    dayTtl,
+                    bucketTtl);
+            // rest of your logic
+
 
         if (!"OK".equals(res)) {
             if ("DAILY_LIMIT_EXCEEDED".equals(res)) {
+                log.warn("Daily quota exceed for user={} (limit={})",userId, MAX_DAILY_REQUESTS);
                 throw new QuotaExceededException("Daily quota exceeded (max " + MAX_DAILY_REQUESTS + ")");
             } else if ("MINUTE_LIMIT_EXCEEDED".equals(res)) {
+                log.warn("Minute quota exceed for user={} (limit={})",userId,MAX_REQUESTS_PER_MINUTE);
                 throw new QuotaExceededException("Rate limit exceeded (max " + MAX_REQUESTS_PER_MINUTE + " requests/minute)");
             } else {
+                log.error("Quota Lua error for user={}: {}",userId,res);
                 throw new QuotaExceededException("Quota check failed: " + res);
             }
         }
+        log.info("Quota allowed for user={}, dayKey={}, bucketKey={}",userId,dayKey,bucketKey);
+
+    } catch (Exception e) {
+        log.error("Error during quota validation for user {}", userId, e);
+        e.printStackTrace();
+        throw e;
+    }
+
     }
 
     /**
@@ -93,15 +141,19 @@ public class UserQuotaServiceImpl implements UserQuotaService{
         long currentMinute = System.currentTimeMillis() / 60000L;
         String bucketKey = String.format("user:%s:bucket:%s", userId, currentMinute);
 
-        Long dayVal = redisTemplate.opsForValue().decrement(dayKey, 1);
-        Long bucketVal = redisTemplate.opsForValue().decrement(bucketKey, 1);
+        Long dayVal = stringRedisTemplate.opsForValue().decrement(dayKey, 1);
+        Long bucketVal = stringRedisTemplate.opsForValue().decrement(bucketKey, 1);
+
+        log.info("Reverting quota for user={}, dayKey={}, bucketKey={}", userId, dayKey, bucketKey);
 
         // Ensure counters don't become negative (fix if needed)
         if (dayVal != null && dayVal < 0) {
-            redisTemplate.opsForValue().set(dayKey, 0);
+            log.warn("dayKey={} below 0 after revert. Resetting to 0.", dayKey);
+            stringRedisTemplate.opsForValue().set(dayKey, "0");
         }
         if (bucketVal != null && bucketVal < 0) {
-            redisTemplate.opsForValue().set(bucketKey, 0);
+            log.warn("bucketKey={} below 0 after revert. Resetting to 0.", bucketKey);
+            stringRedisTemplate.opsForValue().set(bucketKey, "0");
         }
     }
 
@@ -109,12 +161,14 @@ public class UserQuotaServiceImpl implements UserQuotaService{
     public UserQuota getQuota(UUID userId) {
         String today = LocalDate.now().toString();
         String key = String.format("user:%s:quota:%s", userId, today);
-        Object v = redisTemplate.opsForValue().get(key);
+        Object v = stringRedisTemplate.opsForValue().get(key);
         int count = 0;
         if (v instanceof Integer) count = (Integer) v;
         else if (v instanceof Long) count = ((Long) v).intValue();
         else if (v != null) count = Integer.parseInt(v.toString());
 
+        log.debug("Fetched quota for user={}, key={}, count={}", userId, key, count);
+        
         return UserQuota.builder()
                 .userId(userId)
                 .date(today)

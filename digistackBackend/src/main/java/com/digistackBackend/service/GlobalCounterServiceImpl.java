@@ -6,8 +6,10 @@ import com.digistackBackend.mapper.MonthlyUsageMapper;
 import com.digistackBackend.model.MonthlyUsage;
 import com.digistackBackend.repository.MonthlyUsageRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
@@ -16,17 +18,18 @@ import java.util.Arrays;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class GlobalCounterServiceImpl implements GlobalCounterService{
 
-    private final RedisTemplate<String, Object> redisTemplate;
+    private final StringRedisTemplate redisTemplate;
     private final MonthlyUsageRepository monthlyUsageRepository;
 
     private static final String GLOBAL_COUNTER_KEY = "global:month_counter:%s";
 
-    @Value("${monthly.total.credit}")
-    private static int MAX_MONTHLY_CREDITS;
+//    @Value("${monthly.total.credit}")
+    private static int MAX_MONTHLY_CREDITS = 1000;
 
     // Lua: check (curr + amount) <= max then INCRBY, else return error string
     // KEYS[1] = monthKey
@@ -52,6 +55,11 @@ public class GlobalCounterServiceImpl implements GlobalCounterService{
         String key = String.format(GLOBAL_COUNTER_KEY, currentMonth);
 
         int ttlDays = 40; // safe buffer
+        int maxRetries = 3;
+        int retryCount = 0;
+
+        log.debug("Incrementing global counter for month={} by amount={}", currentMonth, amount);
+
         String res = redisTemplate.execute(globalScript,
                 Arrays.asList(key),
                 String.valueOf(amount),
@@ -62,28 +70,52 @@ public class GlobalCounterServiceImpl implements GlobalCounterService{
             throw new QuotaExceededException("Global counter update failed (null response)");
         }
         if ("MONTHLY_LIMIT_EXCEEDED".equals(res)) {
+            log.warn("Global monthly quota exceeded (max {})", MAX_MONTHLY_CREDITS);
             throw new QuotaExceededException("Global monthly quota exceeded (max " + MAX_MONTHLY_CREDITS + ")");
         }
 
         long newCount = Long.parseLong(res);
-
+        log.info("Global counter incremented successfully. New count: {}", newCount);
         // Now persist to DB. If DB save fails, revert Redis increment.
-        try {
-            Optional<MonthlyUsage> usageOpt = monthlyUsageRepository.findByMonth(currentMonth);
-            MonthlyUsage usage = usageOpt.orElseGet(() -> new MonthlyUsage(0L, currentMonth, 0));
-            usage.setTotalKeywordUsed((usage.getTotalKeywordUsed() == null ? 0 : usage.getTotalKeywordUsed()) + amount);
-            MonthlyUsage saved = monthlyUsageRepository.save(usage);
-            return MonthlyUsageMapper.toDto(saved);
-        } catch (Exception dbEx) {
-            // rollback Redis increment
-            redisTemplate.opsForValue().increment(key, -amount);
-            throw new RuntimeException("Failed to persist monthly usage, rolled back global counter", dbEx);
+
+
+        while(retryCount < maxRetries) {
+            try {
+                System.out.println("We have reached to persist global counter");
+                Optional<MonthlyUsage> usageOpt = monthlyUsageRepository.findByMonth(currentMonth);
+                MonthlyUsage usage = usageOpt.orElseGet(() -> new MonthlyUsage(0L, currentMonth, 0));
+                usage.setTotalKeywordUsed((usage.getTotalKeywordUsed() == null ? 0 : usage.getTotalKeywordUsed()) + amount);
+                MonthlyUsage saved = monthlyUsageRepository.save(usage);
+                log.info("Persisted monthly usage to DB for month={}, totalKeywordUsed={}", currentMonth, saved.getTotalKeywordUsed());
+
+                return MonthlyUsageMapper.toDto(saved);
+            } catch (Exception dbEx) {
+                retryCount++;
+                // rollback Redis increment
+                log.error("DB persist failed on attempt {}/{}. Retrying...", retryCount, maxRetries, dbEx);
+
+                if(retryCount >= maxRetries) {
+                    log.error("Max DB persist retries reached. Rolling back Redis increment.");
+                    redisTemplate.opsForValue().increment(key, -amount);
+                    throw new RuntimeException("Failed to persist monthly usage, rolled back global counter", dbEx);
+                }
+
+                try {
+                    Thread.sleep(1000L * retryCount); // Exponential backoff
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted during retry backoff", ie);
+                }
+            }
         }
+        // Should never reach here
+        throw new RuntimeException("Unexpected flow in incrementGlobalCounter");
     }
 
     @Override
     public MonthlyUsageResponseDTO getCurrentMonthUsage() {
         YearMonth currentMonth = YearMonth.now();
+        log.debug("Fetching current month usage for {}", currentMonth);
         return monthlyUsageRepository.findByMonth(currentMonth)
                 .map(MonthlyUsageMapper::toDto)
                 .orElseGet(() -> new MonthlyUsageResponseDTO(0L, currentMonth.toString(), 0));

@@ -10,6 +10,7 @@ import com.digistackBackend.mapper.UserMapper;
 import com.digistackBackend.model.User;
 import com.digistackBackend.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
@@ -21,6 +22,7 @@ import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class UserServiceImpl implements UserService{
 
     private final UserRepository userRepo;
@@ -30,25 +32,39 @@ public class UserServiceImpl implements UserService{
     @Override
     @Transactional
     public UserResponseDTO registerUser(UserRequestDTO requestDTO) throws UserAlreadyExistsException {
+
+        log.info("Attempting to register user with email: {} and mobile: {}", requestDTO.getEmail(), requestDTO.getMobileNumber());
+
         if (userRepo.findByEmail(requestDTO.getEmail()).isPresent()) {
+            log.warn("Registration failed: Email already exists: {}",requestDTO.getEmail());
             throw new UserAlreadyExistsException("Email already exists: " + requestDTO.getEmail());
         }
         if (userRepo.findByMobileNumber(requestDTO.getMobileNumber()).isPresent()) {
+            log.warn("Registration failed: Mobile nubmer already exist: {}",requestDTO.getMobileNumber());
             throw new UserAlreadyExistsException("Mobile already exists: " + requestDTO.getMobileNumber());
         }
 
         User entity = UserMapper.toEntity(requestDTO);
-        return UserMapper.toDto(userRepo.save(entity));
+        User savedUser = userRepo.save(entity);
+        log.info("User successfully registered with id: {}",savedUser);
+        return UserMapper.toDto(savedUser);
     }
 
     @Override
     public void userLogin(LoginRequestDTO requestDTO) throws InvalidCredentialsException {
-        User existingUser = userRepo.findByEmail(requestDTO.getEmail()).orElseThrow(() -> new InvalidCredentialsException("User not found with username: " + requestDTO.getEmail()));
+        log.info("Attmepting login for user: {}",requestDTO.getEmail());
+        User existingUser = userRepo.findByEmail(requestDTO.getEmail()).orElseThrow(() -> {
+            log.warn("Login failed: User not found with email: {}",requestDTO.getEmail());
+            return new InvalidCredentialsException("User not found with username: " + requestDTO.getEmail());
+        });
         Authentication authentication = authenticationManager.authenticate(new UsernamePasswordAuthenticationToken(requestDTO.getEmail(), requestDTO.getPassword()));
         if(authentication.isAuthenticated()){
             String accessToken = jwtService.generateToken(existingUser.getEmail(),existingUser.getRole());
+            log.info("User login scusseful for email: {}", existingUser.getEmail());
+            log.debug("JWT issued: {}", accessToken);
             System.out.println("Sucessfully Login "+accessToken);
         }else{
+            log.warn("Login failed: Invalid credentials for {}",requestDTO.getEmail());
             throw new UserNotFoundException("Invalid username or password");
         }
     }
@@ -56,14 +72,30 @@ public class UserServiceImpl implements UserService{
     @Override
     @Transactional
     public UserResponseDTO updateEmailUser(UUID userId, String updatedemail) throws UserNotFoundException {
-        User entity = userRepo.findById(userId).orElseThrow(()->new UserNotFoundException("User not found id "+userId));
+        log.info("Updating email for userId: {} to: {}", userId, updatedemail);
+        User entity = userRepo.findById(userId)
+                .orElseThrow(() -> {
+                    log.warn("Update failed: User not found with id: {}", userId);
+                    return new UserNotFoundException("User not found id "+userId);
+                });
         entity.setEmail(updatedemail);
-        return UserMapper.toDto(userRepo.save(entity));
+        User updatedUser = userRepo.save(entity);
+        log.info("User email successfully updated for userId: {}", userId);
+        return UserMapper.toDto(updatedUser);
 
     }
 
     @Override
     public UserResponseDTO getUser(String email) throws UserNotFoundException {
-        return UserMapper.toDto(userRepo.findByEmail(email).orElseThrow(()->new UserNotFoundException("User not found with email "+email)));
+        log.info("Fetching user with email: {}", email);
+        UserResponseDTO userResponseDTO = UserMapper.toDto(
+                userRepo.findByEmail(email)
+                        .orElseThrow(() -> {
+                            log.warn("GetUser failed: No user found with email: {}", email);
+                            return new UserNotFoundException("User not found with email "+email);
+                        })
+        );
+        log.info("User fetched successfully for email: {}", email);
+        return userResponseDTO;
     }
 }

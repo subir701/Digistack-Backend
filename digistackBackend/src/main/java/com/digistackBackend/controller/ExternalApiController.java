@@ -17,9 +17,10 @@ public class ExternalApiController {
     public ResponseEntity<KeywordCache> fetchKeyword(
             @RequestParam String keyword,
             @RequestParam(defaultValue = "1000") int locationCode,
-            @RequestParam(defaultValue = "en") String languageCode
+            @RequestParam(defaultValue = "en") String languageCode,
+            @RequestParam String dateFrom
     ) {
-        KeywordCache cache = externalApiService.safeFetchKeyword(keyword, locationCode, languageCode);
+        KeywordCache cache = externalApiService.safeFetchKeyword(keyword, locationCode, languageCode,dateFrom);
         return ResponseEntity.ok(cache);
     }
 }

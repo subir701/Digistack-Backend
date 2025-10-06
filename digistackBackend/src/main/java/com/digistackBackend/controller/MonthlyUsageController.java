@@ -3,6 +3,7 @@ package com.digistackBackend.controller;
 import com.digistackBackend.dto.MonthlyUsageRequestDTO;
 import com.digistackBackend.dto.MonthlyUsageResponseDTO;
 import com.digistackBackend.service.MonthlyUsageService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -15,7 +16,7 @@ public class MonthlyUsageController {
     private final MonthlyUsageService monthlyUsageService;
 
     @PostMapping
-    public ResponseEntity<MonthlyUsageResponseDTO> addUsage(@RequestBody MonthlyUsageRequestDTO dto) {
+    public ResponseEntity<MonthlyUsageResponseDTO> addUsage(@Valid @RequestBody MonthlyUsageRequestDTO dto) {
         return ResponseEntity.ok(monthlyUsageService.addMonthlyUsage(dto));
     }
 
