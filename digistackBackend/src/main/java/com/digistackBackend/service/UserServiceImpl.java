@@ -9,6 +9,7 @@ import com.digistackBackend.exception.UserNotFoundException;
 import com.digistackBackend.mapper.UserMapper;
 import com.digistackBackend.model.User;
 import com.digistackBackend.repository.UserRepository;
+import com.digistackBackend.util.CookieUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -17,6 +18,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -51,7 +53,8 @@ public class UserServiceImpl implements UserService{
     }
 
     @Override
-    public void userLogin(LoginRequestDTO requestDTO) throws InvalidCredentialsException {
+    public HashMap<String, String> userLogin(LoginRequestDTO requestDTO) throws InvalidCredentialsException {
+        HashMap<String, String> map = new HashMap<>();
         log.info("Attmepting login for user: {}",requestDTO.getEmail());
         User existingUser = userRepo.findByEmail(requestDTO.getEmail()).orElseThrow(() -> {
             log.warn("Login failed: User not found with email: {}",requestDTO.getEmail());
@@ -60,13 +63,23 @@ public class UserServiceImpl implements UserService{
         Authentication authentication = authenticationManager.authenticate(new UsernamePasswordAuthenticationToken(requestDTO.getEmail(), requestDTO.getPassword()));
         if(authentication.isAuthenticated()){
             String accessToken = jwtService.generateToken(existingUser.getEmail(),existingUser.getRole());
+            String refreshToken = jwtService.generateRefereshToken(existingUser.getEmail());
+
+            map.put("accessToken", accessToken);
+            map.put("refreshToken", refreshToken);
+
             log.info("User login scusseful for email: {}", existingUser.getEmail());
             log.debug("JWT issued: {}", accessToken);
             System.out.println("Sucessfully Login "+accessToken);
+
+
+            
         }else{
             log.warn("Login failed: Invalid credentials for {}",requestDTO.getEmail());
             throw new UserNotFoundException("Invalid username or password");
         }
+
+        return map;
     }
 
     @Override

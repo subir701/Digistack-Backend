@@ -46,6 +46,20 @@ public class JwtService {
                 .compact();
     }
 
+    public String generateRefereshToken(String username){
+        long nowMillis = System.currentTimeMillis();
+        long expMillis = nowMillis + 7 * 24 * 3600_000L;// 7 Days
+
+        log.debug("Generate Referesh Token for username: {}");
+
+        return Jwts.builder()
+                .subject(username)
+                .issuedAt(new Date(nowMillis))
+                .expiration(new Date(expMillis))
+                .signWith(signKey)
+                .compact();
+    }
+
     public boolean isTokenExpired(String token) {
         log.debug("Token expiration check");
         return extractClaim(token, Claims::getExpiration).before(new Date());
@@ -82,5 +96,14 @@ public class JwtService {
 
         log.debug("Extracted role form token: {}", role);
         return role;
+    }
+
+    public boolean validateToken(String token){
+        try {
+            String username = extractUsername(token);
+            return username != null && !isTokenExpired(token);
+        } catch (Exception e) {
+            return false;
+        }
     }
 }
