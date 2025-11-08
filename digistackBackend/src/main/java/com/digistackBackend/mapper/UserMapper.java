@@ -25,6 +25,7 @@ public final class UserMapper {
         if(entity == null)return null;
 
         return UserResponseDTO.builder()
+                .userId(entity.getUserId())
                 .email(entity.getEmail())
                 .name(entity.getName())
                 .mobileNumber(entity.getMobileNumber())

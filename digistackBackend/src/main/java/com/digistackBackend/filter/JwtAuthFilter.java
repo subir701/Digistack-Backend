@@ -29,6 +29,14 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain) throws ServletException, IOException {
 
+        String path = request.getServletPath();
+        if (path.equals("/api/users/login")
+                || path.equals("/api/users/register")
+                || path.equals("/api/users/me")) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
         String jwt="";
 
         if(request.getCookies() != null){
