@@ -23,6 +23,8 @@ Spring Security-based JWT authentication with role-based endpoint restrictions a
 
 ***
 
+***
+
 ## Tools and Versions Used
 
 | Tool/Technology | Version / Info |
@@ -39,6 +41,18 @@ Spring Security-based JWT authentication with role-based endpoint restrictions a
 | Maven / Gradle | Gradle Wrapper |
 | Docker | To be added (future upgrade) |
 
+
+***
+## Architecture
+Cache-Aside + Token Bucket (Rate Limiting) + Asynchronous Queue Pattern
+
+***
+
+## 🌐 Frontend Repository
+
+The frontend is hosted in a separate repository built using **React.js / TypeScript**.
+
+👉 **[Visit DigiStack Frontend Repository »](https://github.com/your-frontend-repo-link)**
 
 ***
 
