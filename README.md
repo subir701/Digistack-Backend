@@ -22,7 +22,14 @@ Employs async service methods via `CompletableFuture` to handle parallelism, wra
 Spring Security-based JWT authentication with role-based endpoint restrictions and stateless session management.
 
 ***
+## Home Page
+![http://url/to/img.png](https://github.com/subir701/Digistack-Backend/blob/main/digistack-1.PNG)
 
+## Login Page
+![http://url/to/img.png](https://github.com/subir701/Digistack-Backend/blob/main/digistack-3.PNG)
+
+## Analytics Page
+![http://url/to/img.png](https://github.com/subir701/Digistack-Backend/blob/main/digistack-4.PNG)
 ***
 
 ## Tools and Versions Used
